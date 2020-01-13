@@ -18,21 +18,19 @@ type FetcherConfig struct {
 	V2EX    f.V2EXFetcher
 }
 
-func (TGBOT *TelegramBot) CreateModule(module_id int) f.Fetcher {
+func (TGBOT *TelegramBot) CreateModule(module_id int, channel_id string) f.Fetcher {
 	var fetcher f.Fetcher
 	switch module_id {
 	case MTwitter:
 		fetcher = &TGBOT.FetcherConfigs.Twitter
-		fetcher.Init(TGBOT.Database)
 	case MTumblr:
 		fetcher = &TGBOT.FetcherConfigs.Tumblr
-		fetcher.Init(TGBOT.Database)
 	case MV2EX:
 		fetcher = &TGBOT.FetcherConfigs.V2EX
-		fetcher.Init(TGBOT.Database)
 	default:
 		fetcher = &TGBOT.FetcherConfigs.Base
 	}
+	fetcher.Init(TGBOT.Database, channel_id)
 	return fetcher
 }
 
@@ -42,6 +40,33 @@ func (TGBOT *TelegramBot) RegisterHandler() {
 	//TGBOT.Bot.Handle("/example", TGBOT.handle_example_fetcher_example)
 	//TGBOT.Bot.Handle("/v2ex", TGBOT.handle_v2ex)
 	TGBOT.Bot.Handle(tb.OnText, TGBOT.handle_controller)
+	TGBOT.Bot.Handle(tb.OnPhoto, TGBOT.handle_photo)
+}
+
+func (TGBOT *TelegramBot) handle_photo(m *tb.Message) {
+	chatid := strconv.FormatInt(m.OriginalChat.ID, 10)
+	if m.OriginalChat.Type == "channel" {
+		chatid = "@" + m.OriginalChat.Username
+	}
+
+	pass := false
+	for _, v := range *TGBOT.Channels {
+		if v.ID == chatid && auth_user(m.Sender, *v.AdminUserIDs, TGBOT.Admins) {
+			pass = true
+			break
+		}
+	}
+	if !pass {
+		TGBOT.Bot.Send(m.Sender, "Unauthorized.")
+		return
+	}
+
+	var fetcher f.Fetcher
+	if strings.Contains(m.Caption, "tumblr") {
+		fetcher = new(f.TumblrFetcher)
+	}
+	fetcher.Init(TGBOT.Database, chatid)
+	TGBOT.Bot.Send(m.Sender, fetcher.Block(m.Caption))
 }
 
 func (TGBOT *TelegramBot) handle_about(m *tb.Message) {
@@ -54,13 +79,13 @@ func (TGBOT *TelegramBot) handle_id(m *tb.Message) {
 
 func (TGBOT *TelegramBot) handle_example_fetcher_example(m *tb.Message) {
 	var fetcher f.Fetcher = new(f.ExampleFetcher)
-	fetcher.Init(TGBOT.Database)
+	fetcher.Init(TGBOT.Database, "")
 	TGBOT.SendAll(m.Sender, fetcher.GetPushAtLeastOne(strconv.Itoa(m.Sender.ID), []string{}))
 }
 
 func (TGBOT *TelegramBot) handle_v2ex(m *tb.Message) {
 	var fetcher f.Fetcher = new(f.V2EXFetcher)
-	fetcher.Init(TGBOT.Database)
+	fetcher.Init(TGBOT.Database, "")
 	TGBOT.SendAll(m.Sender, fetcher.GetPushAtLeastOne(strconv.Itoa(m.Sender.ID), []string{}))
 }
 
@@ -77,7 +102,7 @@ func (TGBOT *TelegramBot) handle_controller(m *tb.Message) {
 		"listadmin":   TGBOT.requireSuperAdmin(TGBOT.h_listadmin),
 		"setinterval": TGBOT.h_setinterval,
 		"goback":      TGBOT.h_goback,
-		"id":			TGBOT.h_getid,
+		"id":          TGBOT.h_getid,
 	}
 
 	var cmd string

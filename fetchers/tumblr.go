@@ -5,9 +5,9 @@ import (
 	"errors"
 	"fmt"
 	"github.com/asdine/storm"
+	"github.com/dghubble/oauth1"
 	"github.com/patrickmn/go-cache"
 	"log"
-	"strconv"
 	"strings"
 	"time"
 )
@@ -64,19 +64,26 @@ type TumblrPosts struct {
 			Title          string `json:"title,omitempty"`
 			Body           string `json:"body,omitempty"`
 		} `json:"posts"`
-		TotalPosts int `json:"total_posts"`
 	} `json:"response"`
 }
 
 type TumblrFetcher struct {
 	BaseFetcher
-	OAuthConsumerKey string `json:"oauth_consumer_key"`
-	cache            *cache.Cache
+	OAuthConsumerKey    string `json:"consumer_key"`
+	OAuthConsumerSecret string `json:"consumer_secret"`
+	OAuthToken          string `json:"access_token"`
+	OAuthTokenSecret    string `json:"access_token_secret"`
+	cache               *cache.Cache
+	channel_id          string
 }
 
-func (f *TumblrFetcher) Init(db *storm.DB) (err error) {
+func (f *TumblrFetcher) Init(db *storm.DB, channel_id string) (err error) {
 	f.DB = db.From("tumblr")
 	f.cache = cache.New(cacheExp*time.Hour, cachePurge*time.Hour)
+	f.channel_id = channel_id
+	config := oauth1.NewConfig(f.OAuthConsumerKey, f.OAuthConsumerSecret)
+	token := oauth1.NewToken(f.OAuthToken, f.OAuthTokenSecret)
+	f.client = *config.Client(oauth1.NoContext, token)
 	return
 }
 
@@ -84,7 +91,7 @@ func (f *TumblrFetcher) getUserTimeline(user string, time int64) ([]ReplyMessage
 	if f.OAuthConsumerKey == "" {
 		return []ReplyMessage{}, errors.New("Need API key.")
 	}
-	api_url := fmt.Sprintf("https://api.tumblr.com/v2/blog/%s.tumblr.com/posts?api_key=%s", user, f.OAuthConsumerKey)
+	api_url := fmt.Sprintf("https://api.tumblr.com/v2/blog/%s.tumblr.com/posts", user)
 	resp_content, err := f.HTTPGet(api_url)
 	if err != nil {
 		log.Println("Unable to request tumblr api", err)
@@ -108,41 +115,49 @@ func (f *TumblrFetcher) getUserTimeline(user string, time int64) ([]ReplyMessage
 			break
 		}
 
-		var msgid string
-		msgid = strconv.FormatInt(p.ID, 10)
-		if len(p.Trail) > 1 {
-			// We should get the original message id
-			msgid_str, ok := p.Trail[0].Post.ID.(string)
-			if ok && msgid_str != "" {
-				msgid = msgid_str
-			}
-			msgid_int64, ok := p.Trail[0].Post.ID.(int64)
-			if ok && msgid_int64 != 0 {
-				msgid = strconv.FormatInt(msgid_int64, 10)
-			}
-		}
-		msgid = fmt.Sprintf("%s@%s", user, msgid)
-		_, found := f.cache.Get(msgid)
-		if found {
-			continue
-		}
-		f.cache.Set(msgid, true, cache.DefaultExpiration)
-
 		res := make([]Resource, 0, len(p.Photos))
 		for _, photo := range p.Photos {
 			tType := TIMAGE
 			if strings.HasSuffix(strings.ToLower(photo.OriginalSize.URL), ".gif") {
 				tType = TVIDEO
 			}
-			res = append(res, Resource{photo.OriginalSize.URL, tType})
+			// Duplicate
+			strsplit := strings.Split(photo.OriginalSize.URL, "/")
+			if len(strsplit) < 4 {
+				continue
+			}
+			imghash := fmt.Sprintf("%s@%s", f.channel_id, strsplit[3])
+			_, found := f.cache.Get(imghash)
+			f.cache.Set(imghash, true, cache.DefaultExpiration)
+			if found {
+				continue
+			}
+
+			// Blacklist
+			is_blocked := false
+			if err := f.DB.Get("block", imghash, &is_blocked); err == nil && is_blocked {
+				continue
+			}
+
+			res = append(res, Resource{photo.OriginalSize.URL, tType, photo.OriginalSize.URL})
 		}
 		if p.VideoURL != "" {
-			res = append(res, Resource{p.VideoURL, TVIDEO})
+			urlpath := strings.Split(p.VideoURL, "/")
+			videopath := urlpath[len(urlpath)-1]
+			if strings.Contains(videopath, ".") {
+				videohash := fmt.Sprintf("%s@%s", f.channel_id, urlpath[len(urlpath)-1])
+				_, found := f.cache.Get(videohash)
+				f.cache.Set(videohash, true, cache.DefaultExpiration)
+				if !found {
+					res = append(res, Resource{p.VideoURL, TVIDEO, p.VideoURL})
+				}
+			} else {
+				res = append(res, Resource{p.VideoURL, TVIDEO, p.VideoURL})
+			}
 		}
 		if len(res) > 0 {
 			ret = append(ret, ReplyMessage{res, p.ShortURL, nil})
 		}
-
 	}
 	return ret, nil
 }
@@ -171,4 +186,14 @@ func (f *TumblrFetcher) GoBack(userid string, back int64) error {
 		return errors.New("Back too long!")
 	}
 	return f.DB.Set("last_update", userid, now-back)
+}
+
+func (f *TumblrFetcher) Block(caption string) string {
+	strsplit := strings.Split(caption, "/")
+	if len(strsplit) >= 4 {
+		imghash := fmt.Sprintf("%s@%s", f.channel_id, strsplit[3])
+		f.DB.Set("block", imghash, true)
+		return fmt.Sprintf("%s blocked.", imghash)
+	}
+	return "Unrecognized image caption."
 }

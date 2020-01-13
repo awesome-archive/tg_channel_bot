@@ -14,20 +14,22 @@ type TwitterFetcher struct {
 	BaseFetcher
 	api               *anaconda.TwitterApi
 	AccessToken       string `json:"access_token"`
-	AccessToeknSecret string `json:"access_token_secret"`
+	AccessTokenSecret string `json:"access_token_secret"`
 	ConsumerKey       string `json:"consumer_key"`
 	ConsumerSecret    string `json:"consumer_secret"`
 	cache             *cache.Cache
+	channel_id        string
 }
 
 const (
 	MaxTweetCount = "20"
 )
 
-func (f *TwitterFetcher) Init(db *storm.DB) (err error) {
+func (f *TwitterFetcher) Init(db *storm.DB, channel_id string) (err error) {
 	f.DB = db.From("twitter")
-	f.api = anaconda.NewTwitterApiWithCredentials(f.AccessToken, f.AccessToeknSecret, f.ConsumerKey, f.ConsumerSecret)
+	f.api = anaconda.NewTwitterApiWithCredentials(f.AccessToken, f.AccessTokenSecret, f.ConsumerKey, f.ConsumerSecret)
 	f.cache = cache.New(cacheExp*time.Hour, cachePurge*time.Hour)
+	f.channel_id = channel_id
 	return
 }
 
@@ -55,12 +57,12 @@ func (f *TwitterFetcher) getUserTimeline(user string, time int64) ([]ReplyMessag
 		if msgid == "" {
 			msgid = tweet.IdStr
 		}
-		msgid = fmt.Sprintf("%s@%s", user, msgid)
+		msgid = fmt.Sprintf("%s@%s", f.channel_id, msgid)
 		_, found := f.cache.Get(msgid)
+		f.cache.Set(msgid, true, cache.DefaultExpiration)
 		if found {
 			continue
 		}
-		f.cache.Set(msgid, true, cache.DefaultExpiration)
 
 		resources := make([]Resource, 0, len(tweet.ExtendedEntities.Media))
 		for _, media := range tweet.ExtendedEntities.Media {
@@ -84,7 +86,7 @@ func (f *TwitterFetcher) getUserTimeline(user string, time int64) ([]ReplyMessag
 				rURL = media.VideoInfo.Variants[0].Url
 			}
 			if rURL != "" {
-				resources = append(resources, Resource{rURL, rType})
+				resources = append(resources, Resource{rURL, rType, rURL})
 			}
 		}
 		ret = append(ret, ReplyMessage{resources, tweet.FullText, nil})

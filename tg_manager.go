@@ -183,7 +183,7 @@ func (TGBOT *TelegramBot) h_goback(p []string, m *tb.Message) string {
 			if module_id < 0 {
 				return "Unsupported site."
 			}
-			fetcher := TGBOT.CreateModule(module_id)
+			fetcher := TGBOT.CreateModule(module_id, v.ID)
 			if err := fetcher.GoBack(v.ID, back); err != nil {
 				return fmt.Sprintf("Error when go back. %s", err)
 			}
@@ -200,7 +200,7 @@ func (TGBOT *TelegramBot) h_getid(p []string, m *tb.Message) string {
 	first_name := m.Sender.FirstName
 	last_name := m.Sender.LastName
 	username := m.Sender.Username
-	return fmt.Sprintf("Hi %s %s(%s) !\nYour ID: %d\n\nChat: %s\nChatID: %d",last_name, first_name, username, user_id, chat_title, chat_id)
+	return fmt.Sprintf("Hi %s %s(%s) !\nYour ID: %d\n\nChat: %s\nChatID: %d", last_name, first_name, username, user_id, chat_title, chat_id)
 }
 
 func (TGBOT *TelegramBot) requireSuperAdmin(f func([]string, *tb.Message) string) func([]string, *tb.Message) string {

@@ -10,6 +10,7 @@ import (
 	"io/ioutil"
 	"log"
 	"time"
+	"os"
 )
 
 const MaxAlbumSize = 10
@@ -23,6 +24,50 @@ type TelegramBot struct {
 	FetcherConfigs FetcherConfig `json:"fetcher_config"`
 	Channels       *[]*Channel
 	Admins         []string `json:"admins"`
+}
+
+func (TGBOT *TelegramBot) LoadConfigFromEnv() {
+	TGBOT.Token = os.Getenv("BOT_TOKEN")
+	TGBOT.DatabasePath = "database.db"
+	TGBOT.Timeout = 120
+
+	admin := []string{os.Getenv("ADMIN_NAME")}
+	TGBOT.Admins = admin
+
+	var tumblrfetcher f.TumblrFetcher
+	tumblrfetcher.OAuthConsumerKey = os.Getenv("TUMBLR_KEY")
+	tumblrfetcher.OAuthConsumerSecret = os.Getenv("TUMBLR_SECRET")
+	tumblrfetcher.OAuthToken = os.Getenv("TUMBLR_TOKEN")
+	tumblrfetcher.OAuthTokenSecret = os.Getenv("TUMBLR_TOKEN_SECRET")
+
+	var twitterfetcher f.TwitterFetcher
+	twitterfetcher.AccessTokenSecret = os.Getenv("TWITTER_TOKEN_SECRET")
+	twitterfetcher.AccessToken = os.Getenv("TWITTER_TOKEN")
+	twitterfetcher.ConsumerKey = os.Getenv("TWITTER_KEY")
+	twitterfetcher.ConsumerSecret = os.Getenv("TWITTER_SECRET")
+
+	var fetcherconfig FetcherConfig
+	fetcherconfig.Tumblr = tumblrfetcher
+	fetcherconfig.Twitter = twitterfetcher
+
+	TGBOT.FetcherConfigs = fetcherconfig
+
+	var err error
+	TGBOT.Bot, err = tb.NewBot(tb.Settings{
+		Token:       TGBOT.Token,
+		Poller:      &tb.LongPoller{Timeout: time.Duration(TGBOT.Timeout) * time.Second},
+		HTTPTimeout: TGBOT.Timeout,
+	})
+	if err != nil {
+		log.Fatal("[Cannot initialize telegram Bot]", err)
+		return
+	}
+
+	TGBOT.Database, err = storm.Open(TGBOT.DatabasePath, storm.BoltOptions(0600, &bolt.Options{Timeout: 5 * time.Second}))
+	if err != nil {
+		log.Fatal("[Cannot initialize database]", err)
+	}
+	log.Printf("[Bot initialized]Token: %s\nTimeout: %d\n", TGBOT.Token, TGBOT.Timeout)
 }
 
 func (TGBOT *TelegramBot) LoadConfig(json_path string) {
@@ -66,9 +111,9 @@ func (TGBOT *TelegramBot) Send(to tb.Recipient, message f.ReplyMessage) error {
 		var err error
 		var mediaFile tb.InputMedia
 		if message.Resources[0].T == f.TIMAGE {
-			mediaFile = &tb.Photo{File: tb.FromURL(message.Resources[0].URL), Caption: message.Caption}
+			mediaFile = &tb.Photo{File: tb.FromURL(message.Resources[0].URL), Caption: message.Resources[0].Caption}
 		} else if message.Resources[0].T == f.TVIDEO {
-			mediaFile = &tb.Video{File: tb.FromURL(message.Resources[0].URL), Caption: message.Caption}
+			mediaFile = &tb.Video{File: tb.FromURL(message.Resources[0].URL), Caption: message.Resources[0].Caption}
 		} else {
 			return errors.New("Undefined message type.")
 		}
@@ -94,9 +139,9 @@ func (TGBOT *TelegramBot) Send(to tb.Recipient, message f.ReplyMessage) error {
 		mediaFiles := make(tb.Album, 0, MaxAlbumSize)
 		for _, r := range message.Resources[i:end] {
 			if r.T == f.TIMAGE {
-				mediaFiles = append(mediaFiles, &tb.Photo{File: tb.FromURL(r.URL), Caption: message.Caption})
+				mediaFiles = append(mediaFiles, &tb.Photo{File: tb.FromURL(r.URL), Caption: r.Caption})
 			} else if r.T == f.TVIDEO {
-				mediaFiles = append(mediaFiles, &tb.Video{File: tb.FromURL(r.URL), Caption: message.Caption})
+				mediaFiles = append(mediaFiles, &tb.Video{File: tb.FromURL(r.URL), Caption: r.Caption})
 			} else {
 				continue
 			}
